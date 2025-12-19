@@ -110,8 +110,8 @@ func ScanSlice(rows ColumnScanner, v any) error {
 	if n, m := len(columns), len(scan.columns); n > m {
 		return fmt.Errorf("sql/scan: columns do not match (%d > %d)", n, m)
 	}
+	values := scan.values()
 	for rows.Next() {
-		values := scan.values()
 		if err := rows.Scan(values...); err != nil {
 			return fmt.Errorf("sql/scan: failed scanning rows: %w", err)
 		}
@@ -172,6 +172,7 @@ type nullJSON json.RawMessage
 // Scan implements the sql.Scanner interface.
 func (j *nullJSON) Scan(v interface{}) error {
 	if v == nil {
+		*j = nil
 		return nil
 	}
 	*j = v.([]byte)
