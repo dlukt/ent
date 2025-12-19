@@ -366,18 +366,23 @@ func scanPtr(typ reflect.Type, columns []string) (*rowScan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Copy the scanned value as we might modify it.
+	// For example, when scanning a pointer to a struct,
+	// we wrap the struct scan with a pointer creation.
 	wrap := scan.value
-	scan.value = func(vs ...any) (reflect.Value, error) {
-		v, err := wrap(vs...)
-		if err != nil {
-			return reflect.Value{}, err
-		}
-		pt := reflect.PtrTo(v.Type())
-		pv := reflect.New(pt.Elem())
-		pv.Elem().Set(v)
-		return pv, nil
-	}
-	return scan, nil
+	return &rowScan{
+		columns: scan.columns,
+		value: func(vs ...any) (reflect.Value, error) {
+			v, err := wrap(vs...)
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			pt := reflect.PtrTo(v.Type())
+			pv := reflect.New(pt.Elem())
+			pv.Elem().Set(v)
+			return pv, nil
+		},
+	}, nil
 }
 
 func supportsScan(t reflect.Type) bool {
