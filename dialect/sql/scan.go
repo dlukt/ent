@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -143,28 +144,90 @@ func (r *rowScan) values() []any {
 
 // scanType returns rowScan for the given reflect.Type.
 func scanType(typ reflect.Type, columns []string) (*rowScan, error) {
-	switch k := typ.Kind(); {
-	case assignable(typ):
-		return &rowScan{
-			columns: []reflect.Type{typ},
-			value: func(v ...any) (reflect.Value, error) {
-				return reflect.Indirect(reflect.ValueOf(v[0])), nil
-			},
-		}, nil
-	case k == reflect.Ptr:
-		return scanPtr(typ, columns)
-	case k == reflect.Struct:
-		return scanStruct(typ, columns)
-	default:
-		return nil, fmt.Errorf("sql/scan: unsupported type ([]%s)", k)
+	if v, ok := scanners.Load(typ); ok {
+		if scan := v.(*typeCache).get(columns); scan != nil {
+			return scan, nil
+		}
 	}
+	scan, err := func() (*rowScan, error) {
+		switch k := typ.Kind(); {
+		case assignable(typ):
+			return &rowScan{
+				columns: []reflect.Type{typ},
+				value: func(v ...any) (reflect.Value, error) {
+					return reflect.Indirect(reflect.ValueOf(v[0])), nil
+				},
+			}, nil
+		case k == reflect.Ptr:
+			return scanPtr(typ, columns)
+		case k == reflect.Struct:
+			return scanStruct(typ, columns)
+		default:
+			return nil, fmt.Errorf("sql/scan: unsupported type ([]%s)", k)
+		}
+	}()
+	if err != nil {
+		return nil, err
+	}
+	v, _ := scanners.LoadOrStore(typ, &typeCache{})
+	v.(*typeCache).put(columns, scan)
+	return scan, nil
 }
 
 var (
+	scanners     sync.Map // map[reflect.Type]*typeCache
 	timeType     = reflect.TypeOf(time.Time{})
 	scannerType  = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
 	nullJSONType = reflect.TypeOf((*nullJSON)(nil)).Elem()
 )
+
+type (
+	typeCache struct {
+		mu      sync.RWMutex
+		entries []*scanCacheEntry
+	}
+	scanCacheEntry struct {
+		columns []string
+		scan    *rowScan
+	}
+)
+
+func (c *typeCache) get(columns []string) *rowScan {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, e := range c.entries {
+		if equalCols(e.columns, columns) {
+			return e.scan
+		}
+	}
+	return nil
+}
+
+func (c *typeCache) put(columns []string, scan *rowScan) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.entries {
+		if equalCols(e.columns, columns) {
+			return
+		}
+	}
+	c.entries = append(c.entries, &scanCacheEntry{
+		columns: columns,
+		scan:    scan,
+	})
+}
+
+func equalCols(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // nullJSON represents a json.RawMessage that may be NULL.
 type nullJSON json.RawMessage
